@@ -1,0 +1,51 @@
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+
+# Install Node.js 20 for the WhatsApp bridge + ffmpeg for STT + libespeak-ng for Piper TTS
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl ca-certificates gnupg git ffmpeg libespeak-ng1 && \
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" > /etc/apt/sources.list.d/nodesource.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends nodejs && \
+    apt-get purge -y gnupg && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
+
+# Dados do espeak-ng (Piper procura /usr/share/espeak-ng-data/; em Debian o pacote instala em /usr/lib/.../espeak-ng-data)
+ARG ESpeak_DATA_LAYER=1
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends espeak-ng-data && \
+    rm -rf /var/lib/apt/lists/* && \
+    ln -sf /usr/lib/x86_64-linux-gnu/espeak-ng-data /usr/share/espeak-ng-data
+
+WORKDIR /app
+
+# Install Python dependencies first (cached layer)
+COPY pyproject.toml README.md LICENSE ./
+RUN mkdir -p zapista bridge && touch zapista/__init__.py && \
+    uv pip install --system --no-cache . && \
+    rm -rf zapista bridge
+
+# Copy the full source and install (zapista + backend API)
+COPY zapista/ zapista/
+COPY backend/ backend/
+COPY bridge/ bridge/
+COPY prompts/ prompts/
+RUN uv pip install --system --no-cache .
+
+# Build the WhatsApp bridge (ARG DEBUG=1 for dev: bridge will use npm run dev when BRIDGE_DEBUG=1)
+ARG DEBUG=0
+ENV BRIDGE_DEBUG=${DEBUG}
+WORKDIR /app/bridge
+RUN npm install && npm run build
+WORKDIR /app
+
+# Create config directory
+RUN mkdir -p /root/.zapista
+
+# Gateway default port
+EXPOSE 18790
+
+ENTRYPOINT ["zapista"]
+CMD ["status"]

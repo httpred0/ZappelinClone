@@ -1,0 +1,92 @@
+[project]
+name = "zappelin"
+version = "0.1.0"
+description = "Zappelin — WhatsApp AI organizer (lembretes, listas, eventos)"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "Zappelin contributors"}
+]
+keywords = ["whatsapp", "ai", "organizer", "reminders", "lists"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "typer>=0.9.0",
+    "litellm>=1.0.0",
+    "psutil>=5.9.0",
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "websockets>=12.0",
+    "httpx[socks]>=0.25.0",
+    "loguru>=0.7.0",
+    "rich>=13.0.0",
+    "croniter>=2.0.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.22.0",
+    "sqlalchemy>=2.0.0",
+    "icalendar>=5.0.0",
+    "redis>=5.0.0",
+    "tzdata>=2023.3",
+    "duckduckgo-search>=6.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "ruff>=0.1.0",
+]
+# Produção: BD criptografada com SQLCipher (requer libsqlcipher no sistema)
+encryption = [
+    "pysqlcipher3>=1.0.0",
+]
+
+[project.scripts]
+zapista = "zapista.cli.commands:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["zapista"]
+
+[tool.hatch.build.targets.wheel.sources]
+"zapista" = "zapista"
+
+# Include non-Python files in skills
+[tool.hatch.build]
+include = [
+    "zapista/**/*.py",
+    "zapista/skills/**/*.md",
+    "zapista/skills/**/*.sh",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "zapista/",
+    "bridge/",
+    "README.md",
+    "LICENSE",
+]
+
+[tool.hatch.build.targets.wheel.force-include]
+"bridge" = "bridge"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

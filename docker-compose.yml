@@ -1,0 +1,149 @@
+# Deploy: WhatsApp AI Organizer — bridge + gateway + API + Redis.
+# Uso: docker-compose up -d
+# Primeira vez: ver QR do WhatsApp com docker-compose logs -f bridge
+#
+# ⚠️ Timezone: padrão UTC para consistência de lembretes (cron usa timestamps UTC).
+# Para logs na hora de Portugal/Brasil: no .env defina TZ=Europe/Lisbon ou TZ=America/Sao_Paulo.
+#
+# Redis: fila assíncrona para outbound (mensagens); gateway consome da fila.
+# Nota: o volume ZAPISTA_data é partilhado por todos os serviços. Para uma única
+# instância está correto. Escala horizontal (vários gateways) exige armazenamento
+# distribuído/BD centralizado (ver workspace/ARCHITECTURE.md).
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  bridge:
+    build: .
+    entrypoint: []  # override Dockerfile ENTRYPOINT ["zapista"] so we run shell, not zapista sh
+    command: ["sh", "-c", "cd /app/bridge && if [ \"$${BRIDGE_DEBUG}\" = 1 ]; then npm run dev; else node dist/index.js; fi"]
+    working_dir: /app
+    ports:
+      - "3001:3001"
+    volumes:
+      - ZAPISTA_data:/root/.zapista
+    environment:
+      - TZ=${TZ:-UTC}
+      - AUTH_DIR=/root/.zapista/whatsapp-auth
+      - BRIDGE_PORT=3001
+      - BRIDGE_DEBUG=0
+      - BRIDGE_HEALTH_TOKEN=${HEALTH_CHECK_TOKEN:-}
+      # ALLOW_SELF_MESSAGES=1: reencaminha mensagens que envias a ti mesmo (útil para testar com um só número)
+      - ALLOW_SELF_MESSAGES=${ALLOW_SELF_MESSAGES:-0}
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -sf -H \"X-Health-Token: $$BRIDGE_HEALTH_TOKEN\" http://localhost:3001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  api:
+    build: .
+    entrypoint: []  # override ENTRYPOINT so we run uvicorn directly, not zapista uvicorn
+    command: ["uvicorn", "backend.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    volumes:
+      - ZAPISTA_data:/root/.zapista
+    environment:
+      - TZ=${TZ:-UTC}
+      - ZAPISTA_DATA=/root/.zapista
+      - HEALTH_CHECK_TOKEN=${HEALTH_CHECK_TOKEN:-}
+      - API_SECRET_KEY=${API_SECRET_KEY:-}
+      - CORS_ORIGINS=${CORS_ORIGINS:-*}
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file: .env  # optional: copy .env.example to .env for API key override
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -sf -H \"X-Health-Token: $$HEALTH_CHECK_TOKEN\" http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  stt:
+    image: ghcr.io/ggerganov/whisper.cpp:main
+    command: ["/app/build/bin/whisper-server", "-m", "/app/models/ggml-base.en.bin", "--host", "0.0.0.0", "--port", "8080", "--convert"]
+    ports:
+      - "9090:8080"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "2"
+    restart: unless-stopped
+
+  gateway:
+    build: .
+    command: ["gateway"]
+    ports:
+      - "18790:18790"
+    volumes:
+      - ZAPISTA_data:/root/.zapista
+    environment:
+      - TZ=${TZ:-UTC}
+      - ZAPISTA_DATA=/root/.zapista
+      - ZAPISTA_CHANNELS__WHATSAPP__BRIDGE_URL=ws://bridge:3001
+      - STT_ENABLED=${STT_ENABLED:-1}
+      - STT_LOCAL_URL=http://stt:8080
+      # Fila Redis para outbound (mensagens); se definido, gateway produz e consome desta fila.
+      - REDIS_URL=redis://redis:6379/0
+      # Limite de mensagens por minuto por utilizador (default 15). Aumentar para testes (ex.: 60).
+      - RATE_LIMIT_MAX_PER_MINUTE=${RATE_LIMIT_MAX_PER_MINUTE:-15}
+      - LLM_MAX_CONCURRENT=${LLM_MAX_CONCURRENT:-5}
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-60}
+      - LLM_NUM_RETRIES=${LLM_NUM_RETRIES:-2}
+      - ZAPISTA_LOG_FILE=${ZAPISTA_LOG_FILE:-}
+      # TTS (voice notes): pedido em texto («responde em áudio») → PTT. Piper precisa das .so na mesma pasta do binário.
+      - LD_LIBRARY_PATH=${ZAPISTA_DATA:-/root/.zapista}/bin
+      - TTS_ENABLED=${TTS_ENABLED:-0}
+      - PIPER_BIN=${PIPER_BIN:-}
+      - TTS_MODELS_BASE=${TTS_MODELS_BASE:-}
+    env_file: .env  # optional: copy .env.example to .env (incl. ZAPISTA_LOG_FILE)
+    depends_on:
+      bridge:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      stt:
+        condition: service_started
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    restart: unless-stopped
+
+volumes:
+  ZAPISTA_data:
+  redis_data:
